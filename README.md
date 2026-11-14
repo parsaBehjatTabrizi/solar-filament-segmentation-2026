@@ -1,146 +1,545 @@
-# Solar Filament Segmentation Challenge 2026 — U-Net with a pretrained ResNet-50 encoder
+# Solar Filament Segmentation — Kaggle Competition 2026
 
-Solution to the **Solar Filament Segmentation Challenge 2026** (Kaggle: `filament-segmentation-2026`, organized by the Earth-Space AI Research Lab,
-sponsored by the U.S. National Solar Observatory). The task is instance segmentation of solar filaments in GONG H-alpha images (2048 x 2048),
-scored with a pooled panoptic quality (PQ) that uses many-to-many matching and compares the predictions of an image with **every annotator's record**.
+**A U-Net with a pretrained ResNet-50 encoder, multi-annotator training, and morphology-based instance extraction**
 
-**Final result:** public leaderboard **PQ 0.34**. The same configuration trained *without* the validation images scores **0.4435** on our date-grouped validation split
-(official protocol). The leaderboard has been consistently about 0.09–0.10 below validation; every change we made moved both almost equally.
+This repository contains my solution to the **Solar Filament Segmentation Challenge 2026**, a Kaggle competition focused on automatic segmentation of solar filaments in full-disk GONG H-alpha observations.
 
-The 4-page technical report is in [`report/technical_report.pdf`](report/technical_report.pdf).
+The task is challenging because the dataset contains multiple annotation records for the same observation, while the official evaluation scores predictions independently against each annotator record using a custom many-to-many Panoptic Quality (PQ) metric.
 
----
+## Final Result
 
-## Method in one paragraph
+| Evaluation | PQ |
+|---|---:|
+| Best date-grouped validation | **0.4435** |
+| Final public Kaggle leaderboard | **0.34** |
 
-Semantic segmentation of the union of annotated filaments followed by a simple instance extraction.
-A **U-Net with an ImageNet-pretrained ResNet-50 encoder** (32.6 M parameters) is trained at 1024 x 1024 resolution with BCE + soft Dice loss.
-At every epoch each training image uses a **randomly chosen annotator record** as target (the metric scores every record separately).
-BatchNorm running statistics are re-estimated after training (our first models showed unstable validation behaviour caused by stale statistics).
-At inference the model is applied to the image and its horizontal / vertical / double flips (probabilities averaged), the map is up-sampled to 2048 x 2048,
-thresholded at 0.5, a morphological **closing** (radius 10 px) re-joins fragments, **8-connected components** become the instances, and components of **at most 400 px** are dropped.
-The final model is trained on **all 707 labelled images** (last epoch).
+The final submitted model is a **U-Net with a pretrained ResNet-50 encoder**, trained on all 707 labelled images.
 
-```
-2048² image ─► resize 1024², 1–99 % normalisation ─► U-Net (ResNet-50), 4 flip views ─► mean probability
-            ─► up-sample 2048² ─► threshold 0.5 ─► closing r=10 ─► connected components ─► drop ≤ 400 px ─► RLE ─► submission.csv
-```
+The final inference pipeline uses:
+
+**ResNet-50 U-Net → flip TTA → probability averaging → thresholding → morphological closing → connected components → small-object filtering → COCO RLE**
+
+The trained weights and an inference-only notebook are included so that the submitted predictions can be reproduced **without retraining the model**.
 
 ---
 
-## Repository layout
+## 1. Competition
 
+The Solar Filament Segmentation Challenge 2026 is an instance-segmentation problem using full-disk **GONG H-alpha** solar observations.
+
+The dataset contains:
+
+- **707 training images**
+- **180 test images**
+- **1,154 annotation records**
+- Original image resolution: **2048 × 2048**
+- Multiple annotator records for some observations
+
+Each annotation record represents the polygons drawn by one annotator for one image.
+
+The final submission contains one predicted mask per detected filament using COCO compressed RLE encoding.
+
+---
+
+## 2. Main Challenges
+
+There are two important difficulties in this problem.
+
+### Multi-annotator annotations
+
+The same image can have multiple annotation records. Different annotators may disagree about:
+
+- whether a filament exists,
+- its exact boundaries,
+- whether nearby structures form one filament or several,
+- and the extent of faint or small filaments.
+
+Because the official metric evaluates predictions separately against each annotator record, the training strategy needs to account for this variability.
+
+### Custom Panoptic Quality metric
+
+The organizers use a custom pooled Panoptic Quality metric with **many-to-many matching**.
+
+For every ground-truth/prediction pair:
+
+- IoU must be **strictly greater than 0.5** to count as a true positive.
+- Every qualifying pair contributes its IoU to the numerator.
+- Predictions without a qualifying match are false positives.
+- Ground-truth instances without a qualifying prediction are false negatives.
+- Results are pooled across annotator records.
+
+The implementation used in this project was independently cross-checked against the organizers' evaluation code and reproduced the official score to six decimal places on validation predictions.
+
+---
+
+# 3. Method
+
+## 3.1 Model
+
+The final model is a **U-Net with a pretrained ResNet-50 encoder**.
+
+The encoder is initialized with public ImageNet weights.
+
+The one-channel grayscale H-alpha image is repeated to three channels and ImageNet-normalised inside the network.
+
+The network contains:
+
+- ResNet-50 encoder
+- U-Net decoder
+- skip connections
+- bilinear upsampling
+- double-convolution decoder blocks
+- final 1×1 convolution
+- per-pixel filament probability output
+
+The model contains approximately **32.6 million parameters**.
+
+---
+
+## 3.2 Training Data Strategy
+
+Instead of always training against one fixed annotator, a training image with multiple annotation records randomly selects **one annotator record per epoch**.
+
+The polygons from that record are converted into a union segmentation mask.
+
+This strategy was chosen because the official metric evaluates each annotator record independently.
+
+The development dataset was divided using an observation-date-grouped split:
+
+- **568 training images**
+- **139 validation images**
+- **225 validation annotator records**
+- random seed: **42**
+
+Grouping by observation date prevents closely related observations from appearing in both training and validation.
+
+The 180 test images were never used for model or hyperparameter decisions.
+
+For the final submission, the selected configuration was retrained using **all 707 labelled images**.
+
+---
+
+## 3.3 Preprocessing
+
+The original 2048 × 2048 images are resized to:
+
+**1024 × 1024**
+
+using area interpolation.
+
+Each image is independently normalised using its:
+
+- 1st intensity percentile
+- 99th intensity percentile
+
+The only training augmentation used in the final pipeline is:
+
+- horizontal flipping
+- vertical flipping
+
+---
+
+## 3.4 Loss and Optimisation
+
+The model is trained using:
+
+**Binary Cross-Entropy + Soft Dice Loss**
+
+Optimisation:
+
+- Optimizer: Adam
+- Encoder learning rate: `1e-4`
+- Decoder learning rate: `1e-3`
+- Weight decay: `1e-5`
+- Learning-rate schedule: cosine decay
+- Training duration: 50 epochs
+- Batch size: 4
+- Mixed precision training
+
+---
+
+## 3.5 Batch-Normalisation Stabilisation
+
+Early experiments revealed unstable validation behaviour.
+
+Some epochs produced validation-loss spikes, including a checkpoint with PQ = 0.000.
+
+Investigation showed that the learned model weights themselves were not necessarily the problem; the BatchNorm running statistics were unstable.
+
+Re-estimating the BatchNorm statistics using approximately 240 training images restored the affected checkpoint from PQ = 0.000 to approximately **0.27**.
+
+Therefore, BatchNorm statistics were re-estimated before validation and for the final model while keeping the learned weights unchanged.
+
+---
+
+# 4. Inference Pipeline
+
+The final inference process is:
+
+```text
+2048 × 2048 H-alpha image
+            │
+            ▼
+      Resize to 1024²
+            │
+            ▼
+      1–99% normalisation
+            │
+            ▼
+     ResNet-50 U-Net
+            │
+       ┌────┼────┐
+       │    │    │
+    original  H-flip
+              V-flip
+             HV-flip
+       └────┼────┘
+            ▼
+     Average probabilities
+            │
+            ▼
+       Upsample to 2048²
+            │
+            ▼
+      Threshold at 0.5
+            │
+            ▼
+ Morphological closing (r = 10)
+            │
+            ▼
+  8-connected components
+            │
+            ▼
+ Remove components ≤ 400 pixels
+            │
+            ▼
+       COCO compressed RLE
+            │
+            ▼
+       submission.csv
 ```
-.
-├── README.md
-├── requirements.txt
-├── LICENSE
-├── configs/final_config.yaml            hyper-parameters of the final model and of the inference
-├── src/                                 reusable code (the notebooks contain the same logic)
-│   ├── dataset.py                       image loading, annotation parsing, date-grouped split, training dataset
-│   ├── model.py                         U-Net with ResNet encoder, weight loading
-│   ├── losses.py                        BCE + soft Dice
-│   ├── metrics.py                       competition metric (pooled PQ, many-to-many matching)
-│   ├── postprocessing.py                threshold, closing, connected components, size filter
-│   ├── rle.py                           run-length encoding / decoding
-│   └── inference.py                     image -> probability map -> instances -> submission.csv (CLI)
-├── tests/test_core.py                   unit tests (metric rules, post-processing, RLE)
+
+The four probability maps from the original image and its three flip transformations are averaged before instance extraction.
+
+Morphological closing is used to reconnect fragments belonging to the same filament.
+
+Small connected components of **400 pixels or fewer** are discarded.
+
+---
+
+# 5. Experimental Development
+
+The final solution was developed through a sequence of controlled experiments.
+
+| Configuration | Validation PQ | Public PQ |
+|---|---:|---:|
+| Plain U-Net from scratch | ~0.290 | 0.21 |
+| BN stabilisation + TTA | ~0.304 | 0.22 |
+| Remove objects < 200 px | ~0.351 | 0.26 |
+| 400 px + morphological closing | **0.372** | **0.28** |
+| Random annotator training + BN fix | **0.384** | **0.29** |
+| ResNet-34 U-Net | **0.433** | **0.33** |
+| ResNet-50 U-Net | **0.433–0.444** | **0.33** |
+| ResNet-34 + ResNet-50 ensemble | ~0.439 | 0.33 |
+| ResNet-50 trained on all 707 images | — | **0.34** |
+
+The final model was selected based on the controlled validation experiments and then retrained on all available labelled images.
+
+---
+
+# 6. Post-processing Experiments
+
+Post-processing produced one of the largest improvements in the project.
+
+Starting from the raw U-Net baseline:
+
+**Validation PQ: ~0.29**
+
+After the selected post-processing recipe:
+
+**Validation PQ: ~0.37**
+
+The parameters were selected using the validation data with a split-half check over observation dates.
+
+The tested ranges included:
+
+- probability threshold: 0.4–0.6
+- minimum component size: 200–800 pixels
+- closing radius: 0–15 pixels
+
+The final configuration was:
+
+```text
+Probability threshold = 0.5
+Minimum component size = 400 px
+Morphological closing radius = 10 px
+```
+
+---
+
+# 7. Error Analysis
+
+Detailed error analysis showed that the remaining errors are not simply caused by poor pixel-level segmentation.
+
+For the strongest held-out ResNet-50 configuration:
+
+- TP = **1,063**
+- FP = **577**
+- FN = **544**
+- Mean matched IoU = **0.677**
+- Detection quality = **0.655**
+- PQ = **0.4435**
+
+Many errors are borderline cases close to the IoU = 0.5 matching threshold.
+
+Among the false positives:
+
+- 365 overlapped an annotated filament but had IoU ≤ 0.5
+- 212 had no overlap with an annotation
+
+Among missed ground-truth instances:
+
+- 220 overlapped exactly one prediction but had IoU ≤ 0.5
+- 243 had no overlapping prediction
+
+Small filaments were particularly difficult:
+
+- objects between 200–999 pixels had high false-positive and false-negative rates.
+
+The analysis also showed that only a relatively small fraction of missed objects could be corrected simply by merging fragmented predictions.
+
+---
+
+# 8. Annotator Agreement
+
+The dataset contains genuine disagreement between human annotators.
+
+On validation images with multiple annotation records, comparing one annotator against another under the same official metric produced approximately:
+
+**PQ = 0.38**
+
+This is treated as an **agreement reference**, not as a theoretical upper bound for machine performance.
+
+The result demonstrates that some of the remaining model errors are associated with ambiguity in the annotations themselves.
+
+---
+
+# 9. Validation vs. Kaggle Leaderboard
+
+The validation and public leaderboard scores consistently showed a gap of approximately **0.09–0.10 PQ**.
+
+However, the relative effect of the experiments was generally consistent between validation and the public leaderboard.
+
+For example:
+
+```text
+Post-processing:
+Validation  ~0.29 → ~0.37
+Leaderboard ~0.21 → ~0.28
+
+Pretrained encoder:
+Validation  ~0.38 → ~0.43
+Leaderboard ~0.29 → ~0.33
+```
+
+The final all-data model achieved a public leaderboard score of:
+
+**PQ = 0.34**
+
+The public leaderboard is based on a hidden subset of the test data, so the validation score should not be interpreted as an exact prediction of the final evaluation.
+
+---
+
+# 10. Reproducibility
+
+The repository contains:
+
+- source code
+- training/inference configuration
+- final model weights
+- experiment notebooks
+- submission generation code
+- reproducibility notebook
+- technical report
+
+The final weights are stored in half precision and are approximately **65 MB**.
+
+The inference notebook loads the stored weights and regenerates the submission without retraining.
+
+The reproduced submission was compared with the submitted predictions and achieved a pooled PQ agreement of approximately:
+
+**0.9994**
+
+This provides a verification that the published inference pipeline reproduces the submitted predictions closely.
+
+---
+
+# 11. Repository Structure
+
+```text
+Solar-Filament-Segmentation-Kaggle-Competition2026/
+│
 ├── notebooks/
-│   ├── reproduce_submission.ipynb       ★ reproduces the submitted predictions from the stored weights (no training)
-│   ├── 01_dataset_analysis_part1.ipynb  dataset audit / EDA
-│   ├── 01_dataset_analysis_part2.ipynb
-│   ├── 02_metric_and_evaluation.ipynb   official-protocol evaluation, cross-check with the organizers' scoring code
-│   ├── 03_baseline_training.ipynb       Baseline-01: plain U-Net from scratch
-│   ├── 04_experiments/                  all experiments (multi-annotator targets, pretrained encoders, ensembles, diagnostics ...)
-│   └── 05_train_final_model.ipynb       training of the FINAL model on all 707 images
-├── weights/final_model.pth              final weights (float16 state dict, ~65 MB)
+│   ├── dataset analysis
+│   ├── metric/evaluation analysis
+│   ├── model experiments
+│   └── reproduce_submission.ipynb
+│
+├── source code
+│   ├── dataset / preprocessing
+│   ├── model
+│   ├── training
+│   ├── evaluation
+│   ├── post-processing
+│   └── RLE generation
+│
+├── weights/
+│   └── final ResNet-50 U-Net weights
+│
 ├── results/
-│   ├── experiment_results.csv           every experiment: validation PQ and public leaderboard PQ
-│   ├── validation_metrics.csv           detailed validation metrics and error analysis of the train-only model
-│   ├── training_curve.png               training / validation curves (ResNet-50 run)
-│   ├── reproduction_run_gpu.ipynb       executed reproduction run (agreement with the submitted file: 0.9994)
-│   └── qualitative_results/             example predictions
-├── submission/submission.csv            final submitted predictions
-└── report/technical_report.pdf          4-page technical report
+│   ├── validation results
+│   ├── experiment results
+│   └── prediction visualisations
+│
+├── submission/
+│   └── submission.csv
+│
+├── report/
+│   └── technical report
+│
+└── requirements.txt
 ```
-
-The notebooks were run on **Kaggle** (one T4 GPU) and use Kaggle paths (`/kaggle/input/...`); the `src/` package works anywhere.
 
 ---
 
-## Reproduce the submitted predictions (no training)
+# 12. Reproducing the Final Submission
 
-**Requirements:** Python 3.13 (tested on Kaggle), `pip install -r requirements.txt`. A GPU makes inference take minutes; on CPU it is much slower.
-The competition data is **not** included (see the competition rules): download the test images from the Kaggle competition page.
+The final pipeline is designed for **inference from stored weights** rather than retraining.
 
-**Option A — notebook (recommended, this is the pipeline notebook).** On Kaggle (GPU on, Internet on) add the competition data as input, run
-`!git clone https://github.com/parsaBehjatTabrizi/solar-filament-segmentation-2026` in a cell (the notebook then finds `weights/final_model.pth` by itself) and *Run all* of
-`notebooks/reproduce_submission.ipynb`. It writes `submission.csv` and, if the submitted file is available, prints the agreement with it.
-
-**Option B — command line:**
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
-python -m src.inference --weights weights/final_model.pth --test-dir /path/to/test_images --out submission.csv
-pytest -q            # optional: unit tests of the metric, post-processing and RLE
 ```
 
-**Reproduction check.** The stored weights are in half precision, so a few boundary pixels can change. In our run the reproduced file has 1,260 filaments over 177 test images
-against 1,241 over 178 in the submitted file, and the pooled PQ between the two files is **0.9994** (every reproduced filament matches a submitted one and vice versa;
-see `results/reproduction_run_gpu.ipynb`).
+### 2. Obtain the competition data
 
-## Train from scratch
+The competition dataset must be obtained through Kaggle after accepting the competition rules.
 
-`notebooks/05_train_final_model.ipynb` (Kaggle, GPU on, **Internet on** to download the public torchvision ImageNet weights, about 2–3 hours on a T4) trains the final model on all 707 images
-with the configuration in `configs/final_config.yaml`. `03_baseline_training.ipynb` and `notebooks/04_experiments/` contain the development runs on the 568 / 139 date-grouped split.
-Re-training the same configuration changes the validation PQ by up to about ±0.01 (GPU non-determinism), so the weights are provided.
+The original competition images and annotations are **not redistributed in this repository**.
+
+### 3. Load the final weights
+
+The reproduction notebook loads the stored ResNet-50 U-Net weights.
+
+### 4. Run inference
+
+Open:
+
+```text
+notebooks/reproduce_submission.ipynb
+```
+
+and run the inference pipeline.
+
+The notebook:
+
+1. loads the test images,
+2. preprocesses them,
+3. loads the trained model,
+4. performs flip TTA,
+5. averages the probability maps,
+6. performs instance extraction,
+7. applies the final post-processing,
+8. encodes masks using COCO compressed RLE,
+9. writes `submission.csv`.
+
+No model retraining is required.
 
 ---
 
-## Evaluation protocol and results
+# 13. Limitations
 
-* **Metric:** pooled PQ with many-to-many matching (IoU strictly greater than 0.5 is a true positive, its IoU is summed in the numerator;
-  unmatched predictions are false positives, unmatched ground-truth instances false negatives). The predictions of an image are scored separately against every
-  annotator record and the counts are pooled. `src/metrics.py` re-implements this and agrees with the organizers' scoring code to six decimals on validation predictions.
-* **Validation:** date-grouped 80 / 20 split (seed 42): 568 training / 139 validation images (225 annotator records); the 180 test images were never used for decisions.
+The final approach is intentionally simple and reproducible, but it has several limitations.
 
-| step | validation PQ | public LB |
-|---|---:|---:|
-| U-Net from scratch, threshold only | 0.290 | 0.21 |
-| + epoch-50 weights, BN re-estimation, flip TTA | 0.304* | 0.22 |
-| + remove objects ≤ 200 px | 0.351* | 0.26 |
-| + remove ≤ 400 px, closing r = 10 ("recipe") | 0.372 | 0.28 |
-| + random annotator record per epoch (B02a) | 0.384 | 0.29 |
-| ResNet-34 pretrained encoder (B03) | 0.433 | 0.33 |
-| ResNet-50 pretrained encoder (B04) | 0.433 (0.444 in a re-run) | 0.33 |
-| **ResNet-50 trained on all 707 images (final)** | — (no held-out set) | **0.34** |
+### Semantic rather than explicit instance segmentation
 
-\* primary-record protocol (differs from the official protocol by at most 0.002 where both were computed). Full table: `results/experiment_results.csv`.
+The U-Net predicts a semantic filament probability map. Individual filaments are subsequently extracted using connected components.
 
-Things that did **not** help: averaging models (0.439 vs 0.4435 for the best single model), a deeper encoder, and instance-level confidence filtering (+0.005 on one half of the dates only).
+Therefore, the model does not explicitly learn object boundaries or instance identities.
 
-**Error analysis** (train-only ResNet-50, validation; `results/validation_metrics.csv`): TP 1,063 / FP 577 / FN 544, mean IoU of matched pairs 0.677.
-Most errors are borderline: 365 of 577 false positives overlap an annotated filament with IoU ≤ 0.5, and 220 of 544 misses overlap exactly one prediction with IoU ≤ 0.5.
-Passing the exact ground-truth union through our pipeline gives PQ 0.83, so instance extraction is not the main limit. Small filaments (200–999 px) are hardest.
-Annotators disagree as well (another annotator's record scores 0.38 PQ against the primary record on the 59 validation images with several records); we treat this as a reference level, not as a ceiling.
+This makes touching filaments difficult to separate.
 
-## Limitations
+### Small and faint filaments
 
-* The leaderboard score (0.34) is below the validation estimate; we could **not** attribute the gap to temporal distance (test images are on average slightly *closer* in time to training images than validation images).
-  Label differences in the hidden test annotations and the small size of the public subset are candidate explanations that we could not test.
-* The final model has no held-out validation score (all images were used for training); its evidence is the identical configuration that reached 0.4435 on validation and 0.33 on the leaderboard, plus the leaderboard score of 0.34.
-* The semantic mask cannot separate touching filaments and there is no explicit boundary model; hyper-parameters were tuned on a single validation split.
+Small structures remain a major source of false positives and missed annotations.
 
-## AI assistance
+Higher-resolution processing or tiled inference could potentially improve representation of these objects.
 
-Parts of the code and of the technical report were written with the assistance of a large language model (Anthropic's Claude). All methodological choices and results were reviewed by the author.
+### Multi-annotator uncertainty
 
-## Data, license and acknowledgments
+The model is trained using randomly selected annotator records rather than an explicit probabilistic model of annotator uncertainty.
 
-The competition data (MAGFiLO dataset) is not redistributed here. The code in this repository is released under the MIT license (see `LICENSE`); the encoder is initialised from the public torchvision ImageNet weights.
-The organization of the challenge is supported by the U.S. National Science Foundation (Grants 2209912, 2433781, 2511630); the challenge is sponsored by the NSF National Solar Observatory.
-This work uses GONG data obtained by the NSO Integrated Synoptic Program, managed by the National Solar Observatory, which is operated by AURA, Inc. under a cooperative agreement with the NSF.
+Future work could investigate:
 
-## Contact
+- probabilistic multi-annotator targets,
+- boundary-aware segmentation,
+- instance-aware architectures,
+- higher-resolution/tiled inference,
+- cross-validation over observation-date blocks.
 
-Parsa Behjat Tabrizi — behjattabrizi.sp@gmail.com — GitHub: [parsaBehjatTabrizi](https://github.com/parsaBehjatTabrizi)
+---
+
+# 14. Future Work
+
+The experiments suggest several promising directions:
+
+1. **Instance-aware segmentation**  
+   Replace semantic segmentation + connected components with an architecture that explicitly models individual filaments.
+
+2. **Boundary-aware learning**  
+   Add boundary or distance-transform supervision to improve separation of touching structures.
+
+3. **Probabilistic multi-annotator modelling**  
+   Explicitly model uncertainty and disagreement between annotation records.
+
+4. **Higher-resolution inference**  
+   Use tiled 2048-resolution processing to better preserve small filaments.
+
+5. **Cross-validation over date blocks**  
+   Reduce dependence on a single validation split and obtain more robust estimates.
+
+---
+
+# 15. Acknowledgements
+
+This project uses GONG H-alpha observations and the MAGFiLO dataset provided for the Solar Filament Segmentation Challenge 2026.
+
+The challenge is supported by the U.S. National Science Foundation and the National Solar Observatory.
+
+The solution was developed using PyTorch and Kaggle GPU infrastructure.
+
+AI-assisted tools were used during parts of the implementation and documentation process. All major methodological decisions, experiments, evaluation procedures, and final results were reviewed by the author.
+
+---
+
+## Author
+
+**Parsa Behjat Tabrizi**
+
+Computer Science / Computer Engineering
+
+Islamic Azad University, Pardis Branch
+
+---
+
+## References
+
+- Ahmadzadeh et al., *A dataset of manually annotated filaments from H-alpha observations*, Scientific Data, 2024.
+- Ahmadzadeh et al., *Solar Filament Segmentation Challenge 2026*, Kaggle.
+- Ronneberger et al., *U-Net: Convolutional Networks for Biomedical Image Segmentation*, MICCAI, 2015.
+- He et al., *Deep Residual Learning for Image Recognition*, CVPR, 2016.
+- Ioffe & Szegedy, *Batch Normalization*, ICML, 2015.
+- Kingma & Ba, *Adam: A Method for Stochastic Optimization*, ICLR, 2015.
+- Kirillov et al., *Panoptic Segmentation*, CVPR, 2019.
+- Milletari et al., *V-Net: Fully Convolutional Neural Networks for Volumetric Medical Image Segmentation*, 3DV, 2016.
