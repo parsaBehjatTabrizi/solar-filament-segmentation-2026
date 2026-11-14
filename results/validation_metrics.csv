@@ -1,0 +1,37 @@
+section,key,value
+model,description,"B04 ResNet-50 U-Net trained WITHOUT the validation images; last epoch; BN re-estimated; recipe (TTA, thr 0.5, closing 10, min 400 px)"
+protocol,validation_images,139
+protocol,annotator_records_scored,225
+protocol,metric,"pooled PQ, many-to-many matching, every annotator record scored separately (official protocol)"
+pq,PQ_pooled,0.4435
+pq,TP,1063
+pq,FP,577
+pq,FN,544
+pq,segmentation_quality_mean_matched_IoU,0.677
+pq,detection_quality_TP/(TP+0.5FP+0.5FN),0.655
+errors,FP_touching_no_annotation,212
+errors,FP_overlapping_an_annotation_with_IoU<=0.5,365
+errors,FN_no_overlapping_prediction,243
+errors,FN_one_overlapping_prediction_IoU<=0.5,220
+errors,FN_fragmented_merge_would_match,56
+errors,FN_fragmented_merge_would_not_match,25
+errors,predictions_overlapping_2_or_more_GT_instances,35
+oracle,exact_GT_union_to_components,0.9995
+oracle,exact_union_closing_minsize,0.898
+oracle,union_through_our_resolution_path,0.888
+oracle,union_through_our_full_recipe,0.830
+by_station,B,0.409
+by_station,C,0.449
+by_station,L,0.459
+by_station,M,0.430
+by_station,T,0.473
+by_station,U,0.454
+by_year_block,2011-13,0.435
+by_year_block,2014-16,0.453
+by_year_block,2017-19,0.435
+by_year_block,2020-22,0.472
+annotator_agreement,other_record_vs_primary_record_pooled_PQ,0.377
+annotator_agreement,validation_files_with_>=2_records,59
+temporal_distance_to_nearest_training_image,median_days_validation_vs_test,2 vs 2
+temporal_distance_to_nearest_training_image,share_same_day_validation_vs_test,0.0 vs 0.172
+temporal_distance_to_nearest_training_image,share_within_7_days_validation_vs_test,0.871 vs 0.922

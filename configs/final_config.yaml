@@ -1,0 +1,42 @@
+# Configuration of the FINAL model (notebooks/05_train_final_model.ipynb) and of the inference used for the submission.
+experiment: F01_resnet50_s0_full
+task: solar filament instance segmentation (Kaggle: filament-segmentation-2026)
+
+data:
+  train_images: 707                 # all labelled images (the development runs used 568 train / 139 validation)
+  split: date-grouped 80/20 (development runs only), seed 42
+  resolution: 1024                  # 2048x2048 -> 1024x1024, area interpolation
+  normalisation: per-image 1st-99th percentile -> [0, 1]
+  augmentation: [horizontal_flip, vertical_flip]
+  target: union of the polygons of ONE annotator record, drawn at random per image and epoch (multi_record: true)
+
+model:
+  architecture: U-Net, ResNet-50 encoder (torchvision, ImageNet IMAGENET1K_V1 initialisation), 5-stage double-conv decoder
+  parameters: 32.6M
+  input: 1 channel (repeated to 3 and ImageNet-normalised inside the model)
+
+training:
+  loss: BCE + soft Dice (eps 1.0)
+  optimizer: Adam
+  lr_decoder: 1.0e-3
+  lr_encoder: 1.0e-4
+  weight_decay: 1.0e-5
+  schedule: cosine decay to 1 % over all epochs (decoder end lr 1e-5)
+  epochs: 50
+  batch_size: 4
+  mixed_precision: true
+  seed: 42
+  batchnorm: running statistics re-estimated on 240 training images (60 batches of 4) after training; weights unchanged
+  final_checkpoint: last epoch (BN-fixed)
+
+inference:
+  tta: horizontal, vertical and both flips, probabilities averaged
+  upsample: bilinear to 2048x2048
+  threshold: 0.5
+  closing_radius: 10                # elliptical kernel, px
+  connectivity: 8
+  min_pixels: 400                   # components with area <= 400 are dropped
+  output: one run-length encoded mask per instance (COCO compressed RLE, Fortran order), filament_id = <image_id>_<k>
+
+weights:
+  file: weights/final_model.pth     # float16 state dict (~65 MB), converted to float32 when loaded

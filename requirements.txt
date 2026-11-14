@@ -1,0 +1,12 @@
+# Runtime requirements (versions of the Kaggle environment in which the final submission was reproduced; Python 3.13).
+torch==2.11.0
+torchvision==0.26.0
+numpy==2.1.3
+pandas==2.3.3
+opencv-python-headless==4.14.0.94
+pycocotools==2.0.11
+Pillow==13.0.0
+tqdm==4.67.3
+# Optional: unit tests (`pytest -q`) and the figures of the notebooks
+# pytest
+# matplotlib

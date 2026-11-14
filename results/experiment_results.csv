@@ -1,0 +1,11 @@
+experiment_id,description,notebook,validation_pq,validation_protocol,public_leaderboard,notes
+P1,"Plain U-Net trained from scratch (7.8M params); best-validation-loss checkpoint; threshold 0.5; no clean-up",03_baseline_training.ipynb,0.2896,official (all annotator records),0.21,
+P2,"+ epoch-50 weights, BatchNorm re-estimation, 4-view flip TTA",04_experiments/04d_inference_time_improvements.ipynb,0.304,primary record only (differs from official by <=0.002 where both were computed),0.22,
+P3,"+ remove predicted objects <= 200 px",04_experiments/04d_inference_time_improvements.ipynb,0.351,primary record only,0.26,
+R1,"+ remove objects <= 400 px and morphological closing r=10 (first submission, 'recipe')",02_metric_and_evaluation.ipynb,0.3719,official,0.28,
+B02a,"Random annotator record per image and epoch; BN re-estimation before validation (last epoch, recipe)",04_experiments/04a_baseline02_multi_annotator.ipynb,0.3836,official,0.29,
+B03,"ResNet-34 ImageNet encoder + random annotator record + cosine LR (best checkpoint, recipe)",04_experiments/04b_resnet34_B03.ipynb,0.4333,official,0.33,"re-training the same configuration gave 0.4255"
+B04,"ResNet-50 ImageNet encoder, same recipe as B03 (best checkpoint)",04_experiments/04c_resnet50_B04.ipynb,0.4329,official,0.33,"re-training the same configuration gave 0.4435 (last epoch); this run is the train-only model used for the error analysis"
+E01,"Average of the B03 and B04 models (best and last epochs)",04_experiments/04f_ensemble_B03_B04.ipynb,0.4394,official,0.33,"ensemble 0.4394 < best single model 0.4435, so the single model was submitted"
+E02,"Instance-level confidence filter (mean / peak probability) on top of the recipe",04_experiments/04g_confidence_filter.ipynb,0.4487,official (best grid cell),0.33,"+0.005 on one half of the validation dates only (A +0.0005, B +0.010): not adopted, identical file to E01"
+F01,"FINAL: ResNet-50 encoder trained on ALL 707 images (no held-out validation), last epoch, recipe",05_train_final_model.ipynb,,not available (all images used for training),0.34,"final submission"
